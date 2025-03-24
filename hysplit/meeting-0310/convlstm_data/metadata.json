@@ -1,0 +1,13 @@
+{
+    "grid_size": 64,
+    "num_time_steps": 24,
+    "min_lat": 27.0525,
+    "max_lat": 34.2575,
+    "min_lon": -124.4375,
+    "max_lon": -116.5725,
+    "min_concentration": 7.5e-15,
+    "max_concentration": 1.4e-11,
+    "log_transform_applied": true,
+    "normalization_applied": true,
+    "creation_date": "2025-03-10 09:30:21"
+}
