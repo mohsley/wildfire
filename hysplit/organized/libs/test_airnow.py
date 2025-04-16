@@ -1,199 +1,384 @@
 #!/usr/bin/env python3
 """
-Test script for airnowdata.py module
-This script tests the AirNowData class to diagnose issues
+AirNowData Test Script
+
+This script tests the AirNowData class, with special focus on diagnosing coordinate
+conversion issues and ensuring sensors appear within the mask boundaries.
 """
 
 import os
-import json
-import pandas as pd
-import numpy as np
 import sys
-import traceback
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from dotenv import load_dotenv
 
-# Adjust this if the module is in a different location
-sys.path.append('/mnt/d/school/wildfire/hysplit/organized/libs')
+# Import AirNowData - adjust path if needed
+sys.path.append('.')  # Add current directory to path
+from airnowdata_module import AirNowData  # Rename this import to match your file
 
-try:
-    from airnowdata_module import AirNowData
-except ImportError:
-    print("Failed to import AirNowData class. Check if the module is in the correct location.")
-    sys.exit(1)
+# Load environment variables for API key
+load_dotenv()
 
-def inspect_json_file(file_path):
-    """Inspect the content of the JSON file"""
-    print(f"\n=== Inspecting JSON file: {file_path} ===")
+def test_coordinate_conversion(extent, dim=200):
+    """
+    Test the coordinate conversion logic used in AirNowData to ensure points 
+    are properly mapped to the grid.
+    """
+    print("\n=== Testing Coordinate Conversion ===")
     
-    try:
-        if not os.path.exists(file_path):
-            print(f"ERROR: File does not exist: {file_path}")
-            return
-            
-        with open(file_path, 'r') as file:
-            data = json.load(file)
-            
-        print(f"JSON file size: {os.path.getsize(file_path)} bytes")
-        print(f"Number of records: {len(data)}")
-        
-        if len(data) > 0:
-            print("\nSample record:")
-            print(json.dumps(data[0], indent=2))
-            
-            # Check for UTC field
-            if 'UTC' in data[0]:
-                print("\nUTC field found in records.")
-            else:
-                print("\nWARNING: UTC field NOT found in records.")
-                print("Available fields:")
-                for key in data[0].keys():
-                    print(f"- {key}")
-    except Exception as e:
-        print(f"Error reading JSON file: {e}")
-        traceback.print_exc()
-
-def test_direct_json_loading(file_path):
-    """Try loading the JSON and grouping by UTC directly"""
-    print(f"\n=== Testing direct JSON loading and grouping: {file_path} ===")
+    # Unpack extent
+    lon_bottom, lon_top, lat_bottom, lat_top = extent
     
-    try:
-        with open(file_path, 'r') as file:
-            airnow_data = json.load(file)
-            
-        airnow_df = pd.json_normalize(airnow_data)
-        print("\nDataFrame columns:")
-        for col in airnow_df.columns:
-            print(f"- {col}")
-        
-        print(f"\nDataFrame shape: {airnow_df.shape}")
-        
-        if 'UTC' in airnow_df.columns:
-            try:
-                # Try grouping by UTC
-                grouped = airnow_df.groupby('UTC')
-                list_df = [group for name, group in grouped]
-                print(f"Successfully grouped by UTC: {len(list_df)} groups")
-                
-                # Show sample of each group
-                for i, df in enumerate(list_df[:3]):  # Show first 3 groups
-                    print(f"\nGroup {i}, Shape: {df.shape}")
-                    print(df.head(3))
-            except Exception as e:
-                print(f"Error grouping by UTC: {e}")
-                traceback.print_exc()
-        else:
-            print("ERROR: UTC column not found in dataframe")
-            
-            # Check if we can construct UTC
-            if 'DateObserved' in airnow_df.columns and 'HourObserved' in airnow_df.columns:
-                print("\nTrying to construct UTC from DateObserved and HourObserved")
-                try:
-                    airnow_df['UTC'] = airnow_df.apply(
-                        lambda row: pd.Timestamp(row['DateObserved']).replace(
-                            hour=int(row['HourObserved'])
-                        ).strftime('%Y-%m-%dT%H:%M'),
-                        axis=1
-                    )
-                    print("UTC constructed successfully")
-                    print(airnow_df['UTC'].head())
-                except Exception as e:
-                    print(f"Error constructing UTC: {e}")
-                    traceback.print_exc()
-    except Exception as e:
-        print(f"Error in direct JSON processing: {e}")
-        traceback.print_exc()
-
-def test_airnow_data_class():
-    """Test the AirNowData class"""
-    print("\n=== Testing AirNowData class ===")
+    # Calculate distance spans
+    lat_dist = abs(lat_top - lat_bottom)
+    lon_dist = abs(lon_top - lon_bottom)
     
-    # Set test parameters
-    start_date = "2025-01-10-00"
-    end_date = "2025-01-17-00"
-    extent = (-118.6, -117.9, 33.6, 34.3)  # lon_min, lon_max, lat_min, lat_max
-    save_dir = 'data/airnow.json'
-    frames_per_sample = 5
-    dim = 40
+    # Generate test points - corners, center, and arbitrary points
+    test_points = [
+        # Name, Lat, Lon, Expected to be in mask
+        ("Bottom-Left", lat_bottom, lon_bottom, False),
+        ("Bottom-Right", lat_bottom, lon_top, False),
+        ("Top-Left", lat_top, lon_bottom, False),
+        ("Top-Right", lat_top, lon_top, False),
+        ("Center", (lat_bottom + lat_top)/2, (lon_bottom + lon_top)/2, True),
+        # Add more test points as needed
+    ]
     
-    # First check if the JSON file exists
-    if os.path.exists(save_dir):
-        print(f"JSON file exists at {save_dir}")
-        inspect_json_file(save_dir)
-        test_direct_json_loading(save_dir)
+    # Load mask if available
+    mask_path = os.path.join('inputs', 'mask.npy')
+    if os.path.exists(mask_path):
+        mask = np.load(mask_path)
+        mask_available = True
     else:
-        print(f"WARNING: JSON file does not exist at {save_dir}")
+        print(f"Warning: Mask file not found at {mask_path}")
+        mask_available = False
+        mask = np.ones((dim, dim))  # Default mask
     
-    # Create a directory for the JSON file if it doesn't exist
-    os.makedirs(os.path.dirname(save_dir), exist_ok=True)
+    # Generate a test grid to visualize conversions
+    test_grid = np.zeros((dim, dim))
     
-    # Debug the AirNowData initialization
+    print("\nTest Points Conversion Results:")
+    print("-------------------------------")
+    print(f"{'Name':<15} {'Lat':<10} {'Lon':<10} {'Grid X':<10} {'Grid Y':<10} {'In Mask?':<10}")
+    print("-" * 70)
+    
+    for name, lat, lon, expected in test_points:
+        # Forward conversion (lat/lon to grid)
+        x = int(((lat_top - lat) / lat_dist) * dim)
+        y = dim - int(((lon_top + abs(lon)) / lon_dist) * dim)
+        
+        # Handle boundary conditions
+        x = max(0, min(x, dim-1))
+        y = max(0, min(y, dim-1))
+        
+        # Mark on test grid
+        test_grid[x, y] = 1
+        
+        # Check if point is within mask
+        in_mask = mask[x, y] == 1 if mask_available else "Unknown"
+        
+        print(f"{name:<15} {lat:<10.4f} {lon:<10.4f} {x:<10} {y:<10} {in_mask}")
+        
+        # Verify against expectation
+        if mask_available and expected != (mask[x, y] == 1):
+            print(f"  WARNING: Expected {expected} but got {in_mask}!")
+    
+    # Visualize test grid with mask overlay
+    plt.figure(figsize=(10, 8))
+    
+    # Plot mask as background
+    plt.imshow(mask, cmap='gray', alpha=0.5)
+    
+    # Overlay test points
+    for name, lat, lon, _ in test_points:
+        # Convert coordinates
+        x = int(((lat_top - lat) / lat_dist) * dim)
+        y = dim - int(((lon_top + abs(lon)) / lon_dist) * dim)
+        
+        # Handle boundary conditions
+        x = max(0, min(x, dim-1))
+        y = max(0, min(y, dim-1))
+        
+        # Plot point
+        plt.scatter(y, x, c='red', s=50)
+        plt.text(y+5, x+5, name, fontsize=9, color='blue')
+    
+    plt.title('Test Points on Mask')
+    plt.xlabel('Grid Y')
+    plt.ylabel('Grid X')
+    plt.savefig('coordinate_test.png')
+    print(f"\nTest visualization saved to 'coordinate_test.png'")
+
+def test_airnow_data(start_date, end_date, extent, save_dir='data/test_airnow.json'):
+    """
+    Test the AirNowData class with real data, focusing on sensor locations.
+    """
+    print("\n=== Testing AirNowData with Real Data ===")
+    
     try:
-        print("\nInitializing AirNowData class...")
+        # Get API key
+        airnow_api_key = os.environ.get('AIRNOW_API_KEY')
+        if not airnow_api_key:
+            print("Warning: No AirNow API key found in environment variables.")
+            print("Using empty API key which may result in API request failure.")
+        
+        # Initialize AirNowData
         ad = AirNowData(
             start_date=start_date,
             end_date=end_date,
             extent=extent,
-            airnow_api_key=None,
+            airnow_api_key=airnow_api_key,
             save_dir=save_dir,
-            frames_per_sample=frames_per_sample,
-            dim=dim
+            frames_per_sample=1,  # Simple test with 1 frame per sample
+            dim=200,
+            idw_power=2,
+            elevation_path="inputs/elevation.npy",
+            mask_path="inputs/mask.npy",
+            create_elevation_mask=False
         )
         
-        print(f"AirNowData initialization successful")
-        print(f"Data shape: {ad.data.shape}")
-        print(f"Target stations shape: {ad.target_stations.shape}")
-        print(f"Number of air sensor locations: {len(ad.air_sens_loc)}")
+        # Check if we have sensor locations
+        if not ad.air_sens_loc:
+            print("No sensor locations found! This suggests there's an issue with the data or coordinate conversion.")
+            return
         
-        # Check air_sens_loc dictionary
-        print("\nAir sensor locations:")
-        for name, loc in ad.air_sens_loc.items():
-            print(f"- {name}: {loc}")
+        # Extract mask and sensor locations
+        mask = ad.mask
+        sensor_locations = ad.air_sens_loc
+        
+        # Print sensor locations and check against mask
+        print("\nSensor Locations:")
+        print("----------------")
+        print(f"{'Sensor Name':<30} {'Grid X':<10} {'Grid Y':<10} {'In Mask?':<10} {'Raw Value':<10}")
+        print("-" * 75)
+        
+        in_mask_count = 0
+        outside_mask_count = 0
+        
+        for name, (x, y) in sensor_locations.items():
+            in_mask = mask[x, y] == 1
+            
+            if in_mask:
+                in_mask_count += 1
+            else:
+                outside_mask_count += 1
+            
+            # Get raw value from first grid if available
+            raw_value = ad.ground_site_grids[0][x, y] if len(ad.ground_site_grids) > 0 else "N/A"
+            
+            print(f"{name:<30} {x:<10} {y:<10} {in_mask:<10} {raw_value}")
+        
+        print(f"\nSummary: {in_mask_count} sensors inside mask, {outside_mask_count} sensors outside mask")
+        
+        # Visualize sensors on mask
+        visualize_sensors_on_mask(ad)
+        
+        # Check raw vs interpolated
+        if len(ad.ground_site_grids) > 0 and len(ad.data) > 0:
+            visualize_raw_vs_interpolated(ad)
+            
+    except Exception as e:
+        print(f"Error testing AirNowData: {e}")
+        import traceback
+        traceback.print_exc()
+
+def visualize_sensors_on_mask(ad):
+    """
+    Visualize sensor locations on the mask.
+    """
+    try:
+        plt.figure(figsize=(12, 10))
+        
+        # Plot mask
+        plt.imshow(ad.mask, cmap='gray', alpha=0.5)
+        plt.title('Sensor Locations on Mask')
+        
+        # Plot sensor locations
+        for name, (x, y) in ad.air_sens_loc.items():
+            color = 'green' if ad.mask[x, y] == 1 else 'red'
+            plt.scatter(y, x, c=color, s=50)
+            plt.text(y+5, x+5, name, fontsize=8, color='blue')
+        
+        # Add legend
+        from matplotlib.lines import Line2D
+        legend_elements = [
+            Line2D([0], [0], marker='o', color='w', markerfacecolor='green', markersize=10, label='Inside Mask'),
+            Line2D([0], [0], marker='o', color='w', markerfacecolor='red', markersize=10, label='Outside Mask')
+        ]
+        plt.legend(handles=legend_elements)
+        
+        plt.xlabel('Grid Y')
+        plt.ylabel('Grid X')
+        plt.savefig('sensors_on_mask.png')
+        print(f"\nSensor visualization saved to 'sensors_on_mask.png'")
         
     except Exception as e:
-        print(f"Error initializing AirNowData: {e}")
-        traceback.print_exc()
+        print(f"Error visualizing sensors on mask: {e}")
+
+def visualize_raw_vs_interpolated(ad):
+    """
+    Visualize raw vs interpolated data for the first frame.
+    """
+    try:
+        if len(ad.ground_site_grids) == 0 or len(ad.data) == 0:
+            print("No data available for visualization.")
+            return
+            
+        fig, axes = plt.subplots(1, 2, figsize=(16, 8))
         
-        # Try to identify the specific issue
+        # Plot raw data
+        im1 = axes[0].imshow(ad.ground_site_grids[0], cmap='viridis')
+        axes[0].set_title('Raw Grid Data (First Frame)')
+        plt.colorbar(im1, ax=axes[0])
+        
+        # Plot sensor locations on raw data
+        for name, (x, y) in ad.air_sens_loc.items():
+            axes[0].scatter(y, x, c='red', s=40, marker='x')
+            axes[0].text(y+3, x+3, name, fontsize=8, color='white')
+        
+        # Plot interpolated data
+        im2 = axes[1].imshow(np.squeeze(ad.data[0, 0]), cmap='viridis')
+        axes[1].set_title('Interpolated Data (First Frame)')
+        plt.colorbar(im2, ax=axes[1])
+        
+        # Plot sensor locations on interpolated data
+        for name, (x, y) in ad.air_sens_loc.items():
+            axes[1].scatter(y, x, c='red', s=40, marker='x')
+        
+        plt.tight_layout()
+        plt.savefig('raw_vs_interpolated.png')
+        print(f"\nRaw vs interpolated visualization saved to 'raw_vs_interpolated.png'")
+        
+    except Exception as e:
+        print(f"Error visualizing raw vs interpolated data: {e}")
+
+def test_extent_variations(base_extent, start_date, end_date, variations=None):
+    """
+    Test different variations of the extent to see which one correctly places sensors.
+    """
+    print("\n=== Testing Extent Variations ===")
+    
+    lon_bottom, lon_top, lat_bottom, lat_top = base_extent
+    
+    # Define variations to test if none provided
+    if variations is None:
+        variations = [
+            # Name, Extent
+            ("Original", (lon_bottom, lon_top, lat_bottom, lat_top)),
+            ("Swapped Longitude", (lon_top, lon_bottom, lat_bottom, lat_top)),
+            ("Swapped Latitude", (lon_bottom, lon_top, lat_top, lat_bottom)),
+            ("All Swapped", (lon_top, lon_bottom, lat_top, lat_bottom)),
+            ("Reordered", (lat_bottom, lat_top, lon_bottom, lon_top)),
+        ]
+    
+    # Test each variation
+    for name, extent in variations:
+        print(f"\nTesting extent variation: {name}")
+        print(f"Extent: {extent}")
+        
         try:
-            # Check the __get_airnow_data method
-            print("\nTesting __get_airnow_data method directly...")
-            
-            # Create a minimal instance
-            minimal_ad = type('obj', (object,), {
-                'air_sens_loc': {},
-                '__get_airnow_data': AirNowData.__get_airnow_data
-            })()
-            
-            list_df = minimal_ad.__get_airnow_data(
-                start_date, end_date, extent, save_dir, None
-            )
-            
-            print(f"Successfully got {len(list_df)} dataframes from __get_airnow_data")
-            
+            # Quick test with just the coordinate conversion
+            test_coordinate_conversion(extent)
         except Exception as e:
-            print(f"Error in __get_airnow_data: {e}")
-            traceback.print_exc()
-            
-            # Try to identify error in groupby
-            try:
-                print("\nTesting JSON load and groupby directly...")
-                with open(save_dir, 'r') as file:
-                    airnow_data = json.load(file)
-                airnow_df = pd.json_normalize(airnow_data)
-                print(f"DataFrame columns: {airnow_df.columns}")
-                
-                if 'UTC' not in airnow_df.columns:
-                    print("ERROR: 'UTC' column missing from dataframe.")
-                    print("Available columns:")
-                    for col in airnow_df.columns:
-                        print(f"- {col}")
-                else:
-                    list_df = [group for name, group in airnow_df.groupby('UTC')]
-                    print(f"Groupby successful: {len(list_df)} groups")
-            except Exception as inner_e:
-                print(f"Error in JSON processing: {inner_e}")
-                traceback.print_exc()
-                
+            print(f"Error testing extent variation {name}: {e}")
+
+def debug_single_sensor(extent, sensor_lat, sensor_lon, dim=200):
+    """
+    Debug the coordinate conversion for a single sensor point.
+    """
+    print("\n=== Debugging Single Sensor Conversion ===")
+    
+    # Unpack extent
+    lon_bottom, lon_top, lat_bottom, lat_top = extent
+    
+    print(f"Extent: lon_bottom={lon_bottom}, lon_top={lon_top}, lat_bottom={lat_bottom}, lat_top={lat_top}")
+    print(f"Sensor coordinates: lat={sensor_lat}, lon={sensor_lon}")
+    
+    # Calculate distance spans
+    lat_dist = abs(lat_top - lat_bottom)
+    lon_dist = abs(lon_top - lon_bottom)
+    
+    print(f"lat_dist = {lat_dist}, lon_dist = {lon_dist}")
+    
+    # Calculate x (using the formula from AirNowData)
+    x = int(((lat_top - sensor_lat) / lat_dist) * dim)
+    print(f"x = int(((lat_top - sensor_lat) / lat_dist) * dim)")
+    print(f"x = int((({lat_top} - {sensor_lat}) / {lat_dist}) * {dim})")
+    print(f"x = int(({lat_top - sensor_lat} / {lat_dist}) * {dim})")
+    print(f"x = int({(lat_top - sensor_lat) / lat_dist} * {dim})")
+    print(f"x = int({((lat_top - sensor_lat) / lat_dist) * dim})")
+    print(f"x = {x}")
+    
+    # Calculate y (using the formula from AirNowData)
+    y = dim - int(((lon_top + abs(sensor_lon)) / lon_dist) * dim)
+    print(f"y = dim - int(((lon_top + abs(sensor_lon)) / lon_dist) * dim)")
+    print(f"y = {dim} - int((({lon_top} + abs({sensor_lon})) / {lon_dist}) * {dim})")
+    
+    # For clarity with negative longitudes
+    abs_lon = abs(sensor_lon)
+    print(f"abs(sensor_lon) = {abs_lon}")
+    
+    print(f"y = {dim} - int((({lon_top} + {abs_lon}) / {lon_dist}) * {dim})")
+    print(f"y = {dim} - int(({lon_top + abs_lon} / {lon_dist}) * {dim})")
+    print(f"y = {dim} - int({(lon_top + abs_lon) / lon_dist} * {dim})")
+    print(f"y = {dim} - int({((lon_top + abs_lon) / lon_dist) * dim})")
+    print(f"y = {dim} - {int(((lon_top + abs_lon) / lon_dist) * dim)}")
+    print(f"y = {y}")
+    
+    # Load mask if available
+    mask_path = os.path.join('inputs', 'mask.npy')
+    if os.path.exists(mask_path):
+        mask = np.load(mask_path)
+        in_mask = mask[x, y] == 1 if 0 <= x < mask.shape[0] and 0 <= y < mask.shape[1] else False
+        print(f"In mask? {in_mask}")
+    else:
+        print("Mask file not found, can't check if point is in mask")
+    
+    # Check potential coordinate issues
+    if x < 0 or x >= dim or y < 0 or y >= dim:
+        print("WARNING: Calculated coordinates are outside the grid boundaries!")
+    
+    # Test alternative conversions
+    print("\nTesting alternative conversion formulas:")
+    
+    # Alternative 1: Different handling of longitude
+    alt_y = dim - int(((lon_top - sensor_lon) / lon_dist) * dim)
+    print(f"Alternative y (without abs): {alt_y}")
+    
+    # Alternative 2: Inverted calculation
+    alt2_x = int(((sensor_lat - lat_bottom) / lat_dist) * dim)
+    alt2_y = int(((sensor_lon - lon_bottom) / lon_dist) * dim)
+    print(f"Alternative x,y (from bottom): {alt2_x}, {alt2_y}")
+
+def main():
+    """
+    Main test function.
+    """
+    # Define test parameters
+    # Use the same extent as in your notebook
+    extent = (-118.4, 118.0, 33.9, 34.2)  # lon_bottom, lon_top, lat_bottom, lat_top
+    start_date = "2025-01-10-00"
+    end_date = "2025-01-13-00"
+    
+    print("=== AirNowData Test Script ===")
+    print(f"Testing with extent: {extent}")
+    print(f"Date range: {start_date} to {end_date}")
+    
+    # Test basic coordinate conversion
+    test_coordinate_conversion(extent)
+    
+    # Test extent variations
+    test_extent_variations(extent, start_date, end_date)
+    
+    # Debug a specific sensor - replace with actual coordinates if known
+    # This would be the lat/lon of a sensor that's appearing outside the mask
+    debug_single_sensor(extent, 34.0, -118.2)  # Example LA coordinates
+    
+    # Test with real data
+    test_airnow_data(start_date, end_date, extent)
+    
+    print("\n=== Test Complete ===")
 
 if __name__ == "__main__":
-    print("=== AirNowData Module Tester ===")
-    test_airnow_data_class()
+    main()

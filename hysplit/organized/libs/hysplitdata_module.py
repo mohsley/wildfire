@@ -37,7 +37,7 @@ class HYSPLITData:
         output_dir,
         met_file,
         frames_per_sample=1,
-        dim=40,
+        dim=200,
         verbose=False
     ):
         self.base_dir = base_dir
@@ -108,8 +108,8 @@ class HYSPLITData:
             f.write("00 00 00 00 00\n")          # Release start (yy mm dd hh mm)
             f.write("1\n")                       # Number of grid levels
             f.write("0.0 0.0\n")                 # Grid center (lat, lon)
-            f.write("1 1\n")               # Grid spacing (lat, lon)
-            f.write("40.0 40.0\n")               # Grid span (lat, lon)
+            f.write("0.5 0.5\n")               # Grid spacing (lat, lon)
+            f.write("200.0 200.0\n")               # Grid span (lat, lon)
             f.write("./\n")                      # Output directory
             f.write("cdump\n")                   # Output file name
             f.write("1\n")                       # Number of vertical levels
